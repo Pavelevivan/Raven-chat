@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import QApplication, QWidget,\
 import queue
 from PyQt5.QtGui import QIcon
 from PyQt5.QtCore import pyqtSlot, QTimer, Qt
-import network
+import Network
 
 R_REG = re.compile("<REG>(.*?)<REG>")
 R_EX = re.compile("<EX>(.*?)<EX>")
@@ -193,7 +193,7 @@ class GUIChat(QMainWindow):
 if __name__ == '__main__':
     app = QApplication(sys.argv)
     exit_condition = threading.Event()
-    server = network.ServerChat("Nickname")
+    server = Network.ServerChat("Nickname")
     server_thread = threading.Thread(target=server.server_handler, args=(exit_condition,))
     ex = GUIChat(server, exit_condition)
     server_thread.start()
