@@ -12,8 +12,8 @@ from PyQt5.QtGui import QIcon
 from PyQt5.QtCore import pyqtSlot, QTimer, Qt
 import Network
 
-R_REG = re.compile("<REG>(.*?)<REG>")
-R_EX = re.compile("<EX>(.*?)<EX>")
+received_file_message = ('User sent you a file. Do you want to save it?'
+'(Yes\\No)')
 
 
 class GUIChat(QMainWindow):
@@ -82,21 +82,15 @@ class GUIChat(QMainWindow):
             self.user_name.setText("Your nickname: {}".format(name))
 
     def show_message(self):
-
         while not self.server.messages_from_users.empty():
             msg = self.server.messages_from_users.get()
             print('show message')
             print(msg)
-            new_conn = R_REG.match(msg)
-            if new_conn:
-                name, address = new_conn.group(1).split(':')
-                self.change_online_connections(name, address, 'update')
-            elif R_EX.match(msg):
-                address = R_EX.match(msg).group(1)
-                print('exit')
-                self.change_online_connections(None, address, 'delete')
-            else:
-                self.chat_window.append("{}".format(msg))
+            if msg['connections']:
+                self.inform_about_new_users(msg['connections'])
+            if msg['msg'] != '':
+                self.chat_window.append(msg['user'] + ':' + msg['msg'])
+
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
@@ -104,16 +98,15 @@ class GUIChat(QMainWindow):
         if event.key() == Qt.Key_Enter:
             self.send_message()
         else:
-            print(event.key())
             event.ignore()
 
     def send_file(self):
         pass
 
     def send_message(self):
-        message = self.server.name + ": " + self.send_line.text()
+        message = self.send_line.text()
         self.server.messages_to_users.put(message)
-        self.chat_window.append(message)
+        self.chat_window.append(self.server.name + ':' + message)
         self.send_line.clear()
 
     def closeEvent(self, event):
@@ -142,38 +135,45 @@ class GUIChat(QMainWindow):
         for adr, name in self.online_connections.items():
             self.users_online.append(name + adr)
 
+    def inform_about_new_users(self, connections):
+        answer = QMessageBox.question(self,'Detected new users',"Do you want to connect to these users \n" +
+                                      str(connections),
+                                      QMessageBox.Yes | QMessageBox.No)
+        if answer == QMessageBox.Yes:
+            for new_connection in connections:
+                ip, port = new_connection[0].split(', ')
+                port = int(port)
+                try:
+                    sock = socket.create_connection((ip,port))
+                    self.server.incoming_connections.put(sock)
+                except OSError:
+                    msg = QMessageBox.information(self, "Warning", "Sorry, you didn't connect to this user {}{}"
+                                                  .format(str(ip, port), new_connection[1]))
+
     def create_connection(self):
-        ip, ok_ip = QInputDialog.getText(QInputDialog(), "Creating connection", "Input ip address")
+        ip, ok_ip = QInputDialog.getText(self,
+                                         "Creating connection", "Input ip address",)
         ip = GUIChat.check_ip(ip)
         if ok_ip and ip:
-            port, ok_port = QInputDialog.getText(QInputDialog(), "Creating connection", "Input port address")
-            port = GUIChat.check_port(port)
+            port, ok_port = QInputDialog.getInt(self,
+                                                "Creating connection", "Input port address")
             if ok_port and port:
                 try:
                     # Создание нового подключения через новый сокет
-                    sock = socket.create_connection((ip, int(port)))
+                    sock = socket.create_connection((ip, int(port)), timeout=3)
                     self.server.incoming_connections.put(sock)
-                    msg = QMessageBox.information(QMessageBox(), "Notification", "The connection is established")
+                    msg = QMessageBox.information(self,
+                                                  "Notification", "The connection is established",)
                 except OSError as e:
-                    print(e.strerror, e.errno)
-                    msg = QMessageBox.information(QMessageBox(),
-                                                  "Warning", "Sorry, you didn't connected to this user,"
+                    msg = QMessageBox.information(self,
+                                                  "Warning", "Sorry, you didn't connect to this user,"
                                                              " check ip, port and try again")
-                except Exception as e:
-                    print(e.args)
             else:
-                msg = QMessageBox.information(QMessageBox(),
+                msg = QMessageBox.information(self,
                                               "Warning", "Wrong port number, check and try again")
         else:
-            msg = QMessageBox.information(QMessageBox(),
+            msg = QMessageBox.information(self,
                                           "Warning", "Ip address was incorrect, check and try again")
-
-    @staticmethod
-    def check_port(port):
-        if not port:
-            return None
-        port = re.match(r'\d{4,5}', port)
-        return port.group(0) if port else None
 
     @staticmethod
     def check_ip(ip):
