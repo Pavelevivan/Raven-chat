@@ -13,41 +13,13 @@ R_REG = re.compile("<REG>(.*?)<REG>")
 
 R_MSG = re.compile("({.*?})")
 
-class Message:
-    @staticmethod
-    def send_message(data):
-        msg = "<MSG>{}<MSG>".format(data).encode('utf-8')
-        return msg
-
-    @staticmethod
-    def registration(data):
-        msg = "<REG>{}<REG>".format(data)
-        return msg
-
-    @staticmethod
-    def send_contacts(data):
-        msg = "<CON>{}<CON>".format(data).encode('utf-8')
-        return msg
-
-    @staticmethod
-    def disconnect(data):
-        msg = "<EX>{}<EX>".format(data)
-        return msg
-
-
-class Client:
-    def __init__(self, name, ip, port):
-        self.name = name
-        self.port = port
-        self.ip = ip
-
-
 class ServerChat:
     def __init__(self, name):
         self.messages_from_users = Queue()
         self.messages_to_users = Queue()
         self.incoming_connections = Queue()
-        q = Queue()
+        self.lock = threading.RLock()
+        self.exit_condition = threading.Event()
         self.is_server = False
         self.server_ip = None
         self.server_port = None
@@ -56,7 +28,7 @@ class ServerChat:
         self.server_socket = None
         self._create_receiving_socket()
         self.host = self.server_ip + ', ' + str(self.server_port)
-        self.host_connections = []  # List of tuples (host, user)
+        self.host_connections = {self.host: self.name}  # dict key: host, value: user
         self.socket_connections = {}  # Key: socket, Value: (ip, port)
 
     def _create_receiving_socket(self):
@@ -67,32 +39,36 @@ class ServerChat:
                 self.server_port = random.randint(49151, 65535)
                 self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 self.server_socket.bind((self.server_ip, self.server_port))
-                self.server_socket.settimeout(2)
+                self.server_socket.settimeout(1)
                 self.server_socket.listen(socket.SOMAXCONN)
                 established = True
             except OSError:
                 pass
 
     def extract_messages(self, messages):
-        print(messages.decode())
+        print('extracting ' + messages.decode())
         messages = [loads(x) for x in R_MSG.findall(messages.decode('utf-8'))]
         for msg in messages:
             if msg['file'] != '':
                 pass
             if msg['action'] == 'connect':
                 # adding host of the new user
-                self.host_connections.append((msg['host'], msg['user']))
+                if msg['host'] not in self.host_connections or\
+                                self.host_connections[msg['host']] != msg['user']:
+                    with self.lock:
+                        self.host_connections[msg['host']] = msg['user']
             if msg['action'] == 'disconnect':
                 # removing host of the outgoing user
-                self.host_connections.remove((msg['host'], msg['user']))
+                with self.lock:
+                    self.host_connections.pop(msg['host'])
             if msg['connections'] is not None:
-                new_connections = [(x, y) for x, y in msg['connections'] if (x, y) not in self.host_connections]
+                # finding unknown users
+                new_connections = {x: y for x, y in msg['connections'] if x not in self.host_connections}
+                msg['connections'] = new_connections
                 if new_connections:
-                    self.host_connections.extend(new_connections)
-                    msg['connections'] = new_connections
-                    self.messages_from_users.put(msg)
-            if msg['msg'] != '':
-                self.messages_from_users.put(msg)
+                    with self.lock:
+                        self.host_connections.update(new_connections)
+            self.messages_from_users.put(msg)
 
     def _introduction_message(self, sock):
         '''
@@ -100,23 +76,31 @@ class ServerChat:
         :param sock:
         :return:
         '''
-        sock.send(self._create_message(
-            user=self.name,
-            action='connect',
-            host=self.host,
-            connections=self.host_connections
-        ))
+        connections = [[x, y] for x, y in self.host_connections.items() if x != self.host]
+        msg = self.create_message(action='connect', host=self.host,
+                                  connections=connections)
+        try:
+            sock.send(msg)
+        except OSError:
+            self._disconnect(sock)
         
     def _disconnect(self, sock):
-        '''msg_ex = Message.disconnect(self.socket_connections[sock])
-        sock.close()
-        self.messages_from_users.put(msg_ex)'''
-        pass
+        msg = self.create_message(action='disconnect')
+        try:
+            sock.send(msg)
+        except OSError:
+            pass
+        finally:
+            sock.close()
+            del self.socket_connections[sock]
 
     def server_connections_handler(self):
         read_sockets, wr_sock, error = select.select(
             list(self.socket_connections), list(self.socket_connections), [])
         for sock in read_sockets:
+            if sock == self.server_socket:
+                conn, adr = sock.accept()
+                self.socket_connections[conn] = adr
             try:
                 data = sock.recv(MESSAGE_SIZE)
                 if data:
@@ -132,23 +116,21 @@ class ServerChat:
                     if sock == self.server_socket:
                         continue
                     try:
-                        print(message)
                         sock.send(message)
                     except OSError:
                         self._disconnect(sock)
 
     def send_message(self, message):
-        return self._create_message(
-            user=self.name,
+        return self.create_message(
+            action='connect',
             msg=message,
-            host=self.host
         )
 
-    def _create_message(self, msg='', user='', file='',
-                        action='', host='', connections=None):
-        host = str(self.server_socket.getsockname()) if not host else host
-        data = \
-        {
+    def create_message(self, msg='', file='',
+                        action='', connections=None, host=''):
+        host = self.host
+        user = self.name
+        data = {
             'msg': msg,
             'user': user,
             'file': file,
@@ -163,11 +145,18 @@ class ServerChat:
             if sock.fileno() == -1:
                 self._disconnect(sock)
 
-    def server_handler(self, disconnect_condition):
+    def server_handler(self):
         self.socket_connections[self.server_socket] = self.server_socket.getsockname()
         while True:
             if len(self.socket_connections) > 1:
                 self.server_connections_handler()
+            else:
+                try:
+                    new_sock, adr = self.server_socket.accept()
+                    self.socket_connections[new_sock] = adr
+                    self._introduction_message(new_sock)
+                except OSError:
+                    pass
 
             if not self.incoming_connections.empty():
                     new_sock = self.incoming_connections.get()
@@ -175,14 +164,9 @@ class ServerChat:
                     self.socket_connections[new_sock] = adr
                     self._introduction_message(new_sock)
 
-            try:
-                new_sock, adr = self.server_socket.accept()
-                self.socket_connections[new_sock] = adr
-                self._introduction_message(new_sock)
-            except OSError:
-                pass
+            if self.exit_condition.is_set():
+                for conn in list(self.socket_connections):
+                    self._disconnect(conn)
+                break
 
             self._check_connections()
-
-            if disconnect_condition.is_set():
-                break
