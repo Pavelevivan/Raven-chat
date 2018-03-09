@@ -2,16 +2,17 @@ import socket
 import select
 import random
 import re
+import base64
 import threading
+import os
+import mock
 import logging
 from queue import Queue
-from json import loads, dumps
+import json
 MESSAGE_SIZE = 64 * 1024
-DATABASE = dict()  # (ip,addr):name
-RE_CON = re.compile("<CON>(.*?)<CON>")
-R_REG = re.compile("<REG>(.*?)<REG>")
 
 R_MSG = re.compile("({.*?})")
+
 
 class ServerChat:
     def __init__(self, name):
@@ -20,16 +21,16 @@ class ServerChat:
         self.incoming_connections = Queue()
         self.lock = threading.RLock()
         self.exit_condition = threading.Event()
-        self.is_server = False
         self.server_ip = None
         self.server_port = None
         self.name = name
         self.name_changed = False
-        self.server_socket = None
+        self.files_to_send = {}
+        self.receiving_socket = None
         self._create_receiving_socket()
         self.host = self.server_ip + ', ' + str(self.server_port)
         self.host_connections = {self.host: self.name}  # dict key: host, value: user
-        self.socket_connections = {}  # Key: socket, Value: (ip, port)
+        self._socket_connections = {}  # Key: socket, Value: (ip, port)
 
     def _create_receiving_socket(self):
         established = False
@@ -37,38 +38,55 @@ class ServerChat:
             try:
                 self.server_ip = socket.gethostbyname(socket.getfqdn())
                 self.server_port = random.randint(49151, 65535)
-                self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                self.server_socket.bind((self.server_ip, self.server_port))
-                self.server_socket.settimeout(1)
-                self.server_socket.listen(socket.SOMAXCONN)
+                self.receiving_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self.receiving_socket.bind((self.server_ip, self.server_port))
+                self.receiving_socket.settimeout(1)
+                self.receiving_socket.listen(socket.SOMAXCONN)
                 established = True
             except OSError:
                 pass
-
-    def extract_messages(self, messages):
+    
+    def extract_messages(self, messages, sock):
         print('extracting ' + messages.decode())
-        messages = [loads(x) for x in R_MSG.findall(messages.decode('utf-8'))]
+        messages = [json.loads(x) for x in R_MSG.findall(messages.decode('utf-8'))]
         for msg in messages:
-            if msg['file'] != '':
-                pass
-            if msg['action'] == 'connect':
-                # adding host of the new user
-                if msg['host'] not in self.host_connections or\
-                                self.host_connections[msg['host']] != msg['user']:
+            if msg['type'] == 'file':
+                if msg['action'] == 'offer':
+                    pass
+                elif msg['action'] == 'get':
+                    self.files_to_send[sock] = (msg['file_location'], msg['file_name'])
+                elif msg['action'] == 'send':
+                    self._download_file(msg)
+                    msg['file'] = ''
+            else:
+                if msg['action'] == 'connect':
+                    # adding host of the new user
+                    if msg['host'] not in self.host_connections or\
+                                    self.host_connections[msg['host']] != msg['user']:
+                        with self.lock:
+                            self.host_connections[msg['host']] = msg['user']
+                if msg['action'] == 'disconnect':
+                    # removing host of the outgoing user
                     with self.lock:
-                        self.host_connections[msg['host']] = msg['user']
-            if msg['action'] == 'disconnect':
-                # removing host of the outgoing user
-                with self.lock:
-                    self.host_connections.pop(msg['host'])
-            if msg['connections'] is not None:
-                # finding unknown users
-                new_connections = {x: y for x, y in msg['connections'] if x not in self.host_connections}
-                msg['connections'] = new_connections
-                if new_connections:
-                    with self.lock:
-                        self.host_connections.update(new_connections)
+                        self.host_connections.pop(msg['host'])
+                if msg['connections'] is not None:
+                    # finding unknown users
+                    new_connections = {x: y for x, y in msg['connections'] if x not in self.host_connections}
+                    msg['connections'] = new_connections
+                    if new_connections:
+                        with self.lock:
+                            self.host_connections.update(new_connections)
             self.messages_from_users.put(msg)
+
+    @staticmethod
+    def _download_file(msg):
+        path = os.path.join(os.getcwd(), 'Downloads', msg['file_name'])
+        n = 1
+        while os.path.exists(path):
+            path = os.path.join(os.getcwd(), 'Downloads', '({})'.format(n) + msg['file_name'])
+            n = n + 1
+        with open(path, 'wb') as file:
+            file.write(base64.b64decode(msg['file']))
 
     def _introduction_message(self, sock):
         '''
@@ -76,84 +94,130 @@ class ServerChat:
         :param sock:
         :return:
         '''
+
         connections = [[x, y] for x, y in self.host_connections.items() if x != self.host]
-        msg = self.create_message(action='connect', host=self.host,
-                                  connections=connections)
+        msg = self.create_data(action='connect', host=self.host,
+                               connections=connections, user=self.name)
         try:
             sock.send(msg)
         except OSError:
             self._disconnect(sock)
         
     def _disconnect(self, sock):
-        msg = self.create_message(action='disconnect')
+        msg = self.create_data(action='disconnect', user=self.name,
+                               host=self.host,)
         try:
             sock.send(msg)
         except OSError:
             pass
         finally:
             sock.close()
-            del self.socket_connections[sock]
+            del self._socket_connections[sock]
 
-    def server_connections_handler(self):
+    def _connections_handler(self):
         read_sockets, wr_sock, error = select.select(
-            list(self.socket_connections), list(self.socket_connections), [])
+            list(self._socket_connections), list(self._socket_connections), [])
         for sock in read_sockets:
-            if sock == self.server_socket:
+            if sock == self.receiving_socket:
                 conn, adr = sock.accept()
-                self.socket_connections[conn] = adr
-            try:
-                data = sock.recv(MESSAGE_SIZE)
-                if data:
-                    self.extract_messages(data)
-                else:
+                self._socket_connections[conn] = adr
+                self._introduction_message(conn)
+            else:
+                try:
+                    data = sock.recv(MESSAGE_SIZE)
+                    if data:
+                        self.extract_messages(data, sock)
+                    else:
+                        self._disconnect(sock)
+                except OSError:
                     self._disconnect(sock)
-            except OSError:
-                self._disconnect(sock)
 
-        while wr_sock and not self.messages_to_users.empty():
-            message = self.send_message(self.messages_to_users.get())
-            for sock in list(self.socket_connections):
-                    if sock == self.server_socket:
+        while not self.messages_to_users.empty() or self.name_changed or self.files_to_send:
+            if not self.messages_to_users.empty():
+                message = self.messages_to_users.get()
+            else:
+                message = self._create_message(message='')
+            for sock in list(self._socket_connections):
+                    if sock == self.receiving_socket:
                         continue
                     try:
                         sock.send(message)
+                        if sock in self.files_to_send:
+                            self._send_file(sock)
                     except OSError:
                         self._disconnect(sock)
+            self.name_changed = False
 
-    def send_message(self, message):
-        return self.create_message(
+    def _send_file(self, sock):
+        buffer = b''
+        path = self.files_to_send[sock][0]
+        file_name = self.files_to_send[sock][1]
+        with open(path, 'rb') as f:
+            buffer = base64.b64encode(f.read()).decode('utf-8')
+
+        message = self.create_file_data(
+            file=buffer,
+            action='send',
+            user=self.name,
+            host=self.host,
+            file_name=file_name
+        )
+        try:
+            print('here')
+            sock.send(message)
+        except OSError:
+            self._disconnect(sock)
+        self.files_to_send.pop(sock)
+
+    def _create_message(self, message):
+        return self.create_data(
+            host=self.host,
             action='connect',
             msg=message,
+            user=self.name
         )
-
-    def create_message(self, msg='', file='',
-                        action='', connections=None, host=''):
-        host = self.host
-        user = self.name
+    
+    @staticmethod
+    def create_file_data(file=None, action='', host='',
+                         user='', file_name='', file_location=''):
         data = {
+            'type': 'file',
+            'file': file,
+            'action': action,
+            'host': host,
+            'user': user,
+            'file_location': file_location,
+            'file_name': file_name
+        }
+        return json.dumps(data).encode('utf-8')
+    
+    @staticmethod
+    def create_data(user='', host='', msg='',
+                    action='', connections=None):
+        data = {
+            'type': 'msg',
             'msg': msg,
             'user': user,
-            'file': file,
             'action': action,
             'host': host,
             'connections': connections
         }
-        return dumps(data).encode('utf-8')
+        return json.dumps(data).encode('utf-8')
 
     def _check_connections(self):
-        for sock in list(self.socket_connections):
+        for sock in list(self._socket_connections):
             if sock.fileno() == -1:
                 self._disconnect(sock)
 
     def server_handler(self):
-        self.socket_connections[self.server_socket] = self.server_socket.getsockname()
+        self._socket_connections[self.receiving_socket] = self.receiving_socket.getsockname()
         while True:
-            if len(self.socket_connections) > 1:
-                self.server_connections_handler()
+            if len(self._socket_connections) > 1:
+                self._connections_handler()
             else:
                 try:
-                    new_sock, adr = self.server_socket.accept()
-                    self.socket_connections[new_sock] = adr
+                    new_sock, adr = self.receiving_socket.accept()
+                    self._socket_connections[new_sock] = adr
                     self._introduction_message(new_sock)
                 except OSError:
                     pass
@@ -161,11 +225,11 @@ class ServerChat:
             if not self.incoming_connections.empty():
                     new_sock = self.incoming_connections.get()
                     adr = new_sock.getpeername()
-                    self.socket_connections[new_sock] = adr
+                    self._socket_connections[new_sock] = adr
                     self._introduction_message(new_sock)
 
             if self.exit_condition.is_set():
-                for conn in list(self.socket_connections):
+                for conn in list(self._socket_connections):
                     self._disconnect(conn)
                 break
 
