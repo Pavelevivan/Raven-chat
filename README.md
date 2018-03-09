@@ -1,6 +1,6 @@
 # Decentralized chat
 ## Description
-Simple (but not pretty) chat will help you to communicate with people. Chat supports sending files, changing nicknames messages and sharing contacts.
+Simple (not pretty) chat will help you to communicate with people. Chat supports sending files, changing nicknames messages and sharing contacts.
 It's basically group chat. Chat is based on socket interface.
 ## Details
 Chat works only in **local network**, if someone wants to connect to you he will without your permission.
