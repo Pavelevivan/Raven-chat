@@ -7,6 +7,6 @@ Chat works only in **local network**, if someone wants to connect to you he will
 ##Requirements
 1. PyQt5
 2. mock(in future)
-##Plans
-1.Make it pretty
-2.Add tests
+## Plans
+1. Make it pretty
+2. Add tests
