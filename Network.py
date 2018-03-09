@@ -5,8 +5,6 @@ import re
 import base64
 import threading
 import os
-import mock
-import logging
 from queue import Queue
 import json
 MESSAGE_SIZE = 64 * 1024
@@ -53,7 +51,8 @@ class ServerChat:
             if msg['type'] == 'file':
                 if msg['action'] == 'offer':
                     pass
-                elif msg['action'] == 'get':
+                elif msg['action'] == 'get' \
+                        and msg['address'] == self.host:
                     self.files_to_send[sock] = (msg['file_location'], msg['file_name'])
                 elif msg['action'] == 'send':
                     self._download_file(msg)
@@ -163,7 +162,6 @@ class ServerChat:
             file_name=file_name
         )
         try:
-            print('here')
             sock.send(message)
         except OSError:
             self._disconnect(sock)
@@ -179,8 +177,9 @@ class ServerChat:
     
     @staticmethod
     def create_file_data(file=None, action='', host='',
-                         user='', file_name='', file_location=''):
+                         user='', file_name='', file_location='', address=''):
         data = {
+            'address': address,
             'type': 'file',
             'file': file,
             'action': action,
@@ -193,8 +192,9 @@ class ServerChat:
     
     @staticmethod
     def create_data(user='', host='', msg='',
-                    action='', connections=None):
+                    action='', connections=None, address=''):
         data = {
+            'address': address,
             'type': 'msg',
             'msg': msg,
             'user': user,

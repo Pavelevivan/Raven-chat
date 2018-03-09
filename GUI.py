@@ -140,8 +140,8 @@ class GUIChat(QMainWindow):
                 file_location=msg['file_location'],
                 user=self.server.name,
                 action='get',
-                host=self.server.host
-
+                host=self.server.host,
+                address=msg['host']
             )
             self.server.messages_to_users.put(message)
 
@@ -202,18 +202,15 @@ class GUIChat(QMainWindow):
 
     def notify_about_new_users(self, connections):
         for new_connection in connections:
-            answer = QMessageBox.question(self, 'Detected new users', "Do you want to connect to these users \n" +
-                                          str(new_connection),
-                                          QMessageBox.Yes | QMessageBox.No)
-            if answer == QMessageBox.Yes:
-                ip, port = new_connection.split(', ')
-                port = int(port)
-                try:
-                    sock = socket.create_connection((ip, port))
-                    self.server.incoming_connections.put(sock)
-                except OSError:
-                    msg = QMessageBox.information(self, "Warning", "Sorry, you didn't connect to this user {}{}"
-                                                  .format(ip, str(port), new_connection[1]))
+            answer = QMessageBox.information(self, 'Detected new users', str(new_connection))
+            ip, port = new_connection.split(', ')
+            port = int(port)
+            try:
+                sock = socket.create_connection((ip, port))
+                self.server.incoming_connections.put(sock)
+            except OSError:
+                msg = QMessageBox.information(self, "Warning", "Sorry, you didn't connect to this user {}{}"
+                                              .format(ip, str(port), new_connection[1]))
 
     def create_connection(self):
         ip, ok_ip = QInputDialog.getText(self,
