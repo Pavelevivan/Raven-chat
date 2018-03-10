@@ -7,12 +7,12 @@ import threading
 import os
 from queue import Queue
 import json
-MESSAGE_SIZE = 64 * 1024
+MESSAGE_SIZE = 64 * 1024 * 1024
 
 R_MSG = re.compile("({.*?})")
 
 
-class ServerChat:
+class Network:
     def __init__(self, name):
         self.messages_from_users = Queue()
         self.messages_to_users = Queue()
@@ -45,9 +45,15 @@ class ServerChat:
                 pass
     
     def extract_messages(self, messages, sock):
-        print('extracting ' + messages.decode())
         messages = [json.loads(x) for x in R_MSG.findall(messages.decode('utf-8'))]
         for msg in messages:
+            # adding host of the new user or updating name
+            if msg['host'] not in self.host_connections or \
+                            self.host_connections[msg['host']] != msg['user']:
+                msg['action'] = 'connect'
+                with self.lock:
+                    self.host_connections[msg['host']] = msg['user']
+
             if msg['type'] == 'file':
                 if msg['action'] == 'offer':
                     pass
@@ -58,12 +64,6 @@ class ServerChat:
                     self._download_file(msg)
                     msg['file'] = ''
             else:
-                if msg['action'] == 'connect':
-                    # adding host of the new user
-                    if msg['host'] not in self.host_connections or\
-                                    self.host_connections[msg['host']] != msg['user']:
-                        with self.lock:
-                            self.host_connections[msg['host']] = msg['user']
                 if msg['action'] == 'disconnect':
                     # removing host of the outgoing user
                     with self.lock:
@@ -87,7 +87,7 @@ class ServerChat:
         with open(path, 'wb') as file:
             file.write(base64.b64decode(msg['file']))
 
-    def _introduction_message(self, sock):
+    def _introduction_message(self):
         '''
         Sending known contacts and user's nickname to the new user
         :param sock:
@@ -95,12 +95,9 @@ class ServerChat:
         '''
 
         connections = [[x, y] for x, y in self.host_connections.items() if x != self.host]
-        msg = self.create_data(action='connect', host=self.host,
+        msg = self.create_data(host=self.host,
                                connections=connections, user=self.name)
-        try:
-            sock.send(msg)
-        except OSError:
-            self._disconnect(sock)
+        return msg
         
     def _disconnect(self, sock):
         msg = self.create_data(action='disconnect', user=self.name,
@@ -120,7 +117,10 @@ class ServerChat:
             if sock == self.receiving_socket:
                 conn, adr = sock.accept()
                 self._socket_connections[conn] = adr
-                self._introduction_message(conn)
+                try:
+                    conn.send(self._introduction_message())
+                except OSError:
+                    self._disconnect(conn)
             else:
                 try:
                     data = sock.recv(MESSAGE_SIZE)
@@ -170,7 +170,6 @@ class ServerChat:
     def _create_message(self, message):
         return self.create_data(
             host=self.host,
-            action='connect',
             msg=message,
             user=self.name
         )
@@ -218,7 +217,7 @@ class ServerChat:
                 try:
                     new_sock, adr = self.receiving_socket.accept()
                     self._socket_connections[new_sock] = adr
-                    self._introduction_message(new_sock)
+                    self.incoming_connections.put(new_sock)
                 except OSError:
                     pass
 
@@ -226,7 +225,10 @@ class ServerChat:
                     new_sock = self.incoming_connections.get()
                     adr = new_sock.getpeername()
                     self._socket_connections[new_sock] = adr
-                    self._introduction_message(new_sock)
+                    try:
+                        new_sock.send(self._introduction_message())
+                    except OSError:
+                        self._disconnect(new_sock)
 
             if self.exit_condition.is_set():
                 for conn in list(self._socket_connections):

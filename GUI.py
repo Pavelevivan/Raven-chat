@@ -113,7 +113,6 @@ class GUIChat(QMainWindow):
     def show_message(self):
         while not self.server.messages_from_users.empty():
             msg = self.server.messages_from_users.get()
-            print('show message', msg)
             if msg['type'] == 'file':
                 if msg['action'] == 'offer':
                     self.notify_about_offered_file(msg)
@@ -135,7 +134,7 @@ class GUIChat(QMainWindow):
         answer = QMessageBox.question(self, "Notification", "{} offered you a file {}. Do you want to receive it?"
                                       .format(msg['user'], msg['file_name']), QMessageBox.Yes, QMessageBox.No)
         if answer == QMessageBox.Yes:
-            message = Network.ServerChat.create_file_data(
+            message = Network.Network.create_file_data(
                 file_name=msg['file_name'],
                 file_location=msg['file_location'],
                 user=self.server.name,
@@ -155,6 +154,9 @@ class GUIChat(QMainWindow):
         
     def offer_file(self):
         name = QFileDialog.getOpenFileName(self, 'Open file', os.getcwd())
+        if name[0] == '':
+            return
+
         r_fname = re.compile(r'(([a-zA-Z0-9._])*)$')
         file_name = r_fname.search(name[0]).group()
         file_location = os.path.normpath(name[0])
@@ -162,7 +164,7 @@ class GUIChat(QMainWindow):
                                    QMessageBox.Yes | QMessageBox.No)
         if msg == QMessageBox.No:
             return
-        message = Network.ServerChat.create_file_data(
+        message = Network.Network.create_file_data(
             file=None,
             action='offer',
             host=self.server.host,
@@ -176,10 +178,9 @@ class GUIChat(QMainWindow):
         text = self.send_line.text()
         if not text:
             return
-        message = Network.ServerChat.create_data(
+        message = Network.Network.create_data(
             user=self.server.name,
             host=self.server.host,
-            action='connect',
             msg=text
         )
         self.server.messages_to_users.put(message)
@@ -187,7 +188,7 @@ class GUIChat(QMainWindow):
         self.send_line.clear()
 
     def closeEvent(self, event):
-        reply = QMessageBox.question(self, "Warning", "Are you sure to quit",
+        reply = QMessageBox.question(QMessageBox(), "Warning", "Are you sure to quit",
                                      QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if reply == QMessageBox.Yes:
             self.server.exit_condition.set()
@@ -209,11 +210,11 @@ class GUIChat(QMainWindow):
                 sock = socket.create_connection((ip, port))
                 self.server.incoming_connections.put(sock)
             except OSError:
-                msg = QMessageBox.information(self, "Warning", "Sorry, you didn't connect to this user {}{}"
+                msg = QMessageBox.information(QInputDialog(), "Warning", "Sorry, you didn't connect to this user {}{}"
                                               .format(ip, str(port), new_connection[1]))
 
     def create_connection(self):
-        ip, ok_ip = QInputDialog.getText(self,
+        ip, ok_ip = QInputDialog.getText(QInputDialog(),
                                          "Creating connection", "Input ip address",)
         if not ok_ip:
             return
@@ -257,7 +258,7 @@ class GUIChat(QMainWindow):
 if __name__ == '__main__':
     app = QApplication(sys.argv)
     exit_condition = threading.Event()
-    server = Network.ServerChat("User")
+    server = Network.Network("User")
     server_thread = threading.Thread(target=server.server_handler, args=())
     ex = GUIChat(server)
     server_thread.start()
