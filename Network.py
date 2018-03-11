@@ -34,7 +34,7 @@ class ServerChat:
         established = False
         while not established:
             try:
-                self.server_ip = socket.gethostbyname(socket.getfqdn())
+                self.server_ip = self._get_ip()
                 self.server_port = random.randint(49151, 65535)
                 self.receiving_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 self.receiving_socket.bind((self.server_ip, self.server_port))
@@ -43,7 +43,18 @@ class ServerChat:
                 established = True
             except OSError:
                 pass
-    
+            
+    def _get_ip(self):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect(('8.8.8.8',80))
+        ip = sock.getsockname()[0]
+    except:
+        ip = '127.0.0.1'
+    finally:
+        sock.close()
+    return ip
+
     def extract_messages(self, messages, sock):
         print('extracting ' + messages.decode())
         messages = [json.loads(x) for x in R_MSG.findall(messages.decode('utf-8'))]
