@@ -50,15 +50,14 @@ class Network:
             # adding host of the new user or updating name
             if msg['host'] not in self.host_connections or \
                             self.host_connections[msg['host']] != msg['user']:
-                msg['action'] = 'connect'
                 with self.lock:
                     self.host_connections[msg['host']] = msg['user']
-
             if msg['type'] == 'file':
                 if msg['action'] == 'offer':
                     pass
                 elif msg['action'] == 'get' \
                         and msg['address'] == self.host:
+                    # get request on file
                     self.files_to_send[sock] = (msg['file_location'], msg['file_name'])
                 elif msg['action'] == 'send':
                     self._download_file(msg)
@@ -69,7 +68,7 @@ class Network:
                     with self.lock:
                         self.host_connections.pop(msg['host'])
                 if msg['connections'] is not None:
-                    # finding unknown users
+                    # appending unknown users
                     new_connections = {x: y for x, y in msg['connections'] if x not in self.host_connections}
                     msg['connections'] = new_connections
                     if new_connections:
@@ -204,6 +203,7 @@ class Network:
         return json.dumps(data).encode('utf-8')
 
     def _check_connections(self):
+        # removing closed sockets
         for sock in list(self._socket_connections):
             if sock.fileno() == -1:
                 self._disconnect(sock)
@@ -222,15 +222,17 @@ class Network:
                     pass
 
             if not self.incoming_connections.empty():
-                    new_sock = self.incoming_connections.get()
-                    adr = new_sock.getpeername()
-                    self._socket_connections[new_sock] = adr
-                    try:
-                        new_sock.send(self._introduction_message())
-                    except OSError:
-                        self._disconnect(new_sock)
+                # appending new connections
+                new_sock = self.incoming_connections.get()
+                adr = new_sock.getpeername()
+                self._socket_connections[new_sock] = adr
+                try:
+                    new_sock.send(self._introduction_message())
+                except OSError:
+                    self._disconnect(new_sock)
 
             if self.exit_condition.is_set():
+                # closing all sockets and breaking while loop
                 for conn in list(self._socket_connections):
                     self._disconnect(conn)
                 break
