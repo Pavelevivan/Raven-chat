@@ -44,7 +44,7 @@ class GUIChat(QMainWindow):
         self.users_online = QTextEdit()
         self.users_online.setReadOnly(True)
         self.users_online.setHorizontalScrollBar(qsb)
-        self.users_online.setMaximumWidth(170)
+        self.users_online.setMaximumWidth(200)
         self.users_online.setMinimumWidth(170)
 
         # creating window to show chat messages

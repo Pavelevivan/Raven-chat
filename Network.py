@@ -7,8 +7,8 @@ import threading
 import os
 from queue import Queue
 import json
-MESSAGE_SIZE = 64 * 1024 * 1024
 
+MESSAGE_SIZE = 64 * 1024 * 1024
 R_MSG = re.compile("({.*?})")
 
 
@@ -23,11 +23,11 @@ class Network:
         self.server_port = None
         self.name = name
         self.name_changed = False
-        self.files_to_send = {}
+        self._files_to_send = {}
         self.receiving_socket = None
         self._create_receiving_socket()
         self.host = self.server_ip + ', ' + str(self.server_port)
-        self.host_connections = {self.host: self.name}  # dict key: host, value: user
+        self.host_connections = {self.host: self.name}  # dict key: host, value: username
         self._socket_connections = {}  # Key: socket, Value: (ip, port)
 
     def _create_receiving_socket(self):
@@ -35,7 +35,7 @@ class Network:
         while not established:
             try:
                 self.server_ip = socket.gethostbyname(socket.getfqdn())
-                self.server_port = random.randint(49151, 65535)
+                self.server_port = random.randint(49152, 65535)
                 self.receiving_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 self.receiving_socket.bind((self.server_ip, self.server_port))
                 self.receiving_socket.settimeout(1)
@@ -43,7 +43,19 @@ class Network:
                 established = True
             except OSError:
                 pass
-    
+
+    @staticmethod
+    def _get_ip():
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.connect(('8.8.8.8', 80))
+            ip = sock.getsockname()[0]
+        except OSError:
+            ip = '127.0.0.1'
+        finally:
+            sock.close()
+        return ip
+
     def extract_messages(self, messages, sock):
         messages = [json.loads(x) for x in R_MSG.findall(messages.decode('utf-8'))]
         for msg in messages:
@@ -57,8 +69,8 @@ class Network:
                     pass
                 elif msg['action'] == 'get' \
                         and msg['address'] == self.host:
-                    # get request on file
-                    self.files_to_send[sock] = (msg['file_location'], msg['file_name'])
+                    # got request on file
+                    self._files_to_send[sock] = (msg['file_location'], msg['file_name'])
                 elif msg['action'] == 'send':
                     self._download_file(msg)
                     msg['file'] = ''
@@ -92,7 +104,6 @@ class Network:
         :param sock:
         :return:
         '''
-
         connections = [[x, y] for x, y in self.host_connections.items() if x != self.host]
         msg = self.create_data(host=self.host,
                                connections=connections, user=self.name)
@@ -130,7 +141,7 @@ class Network:
                 except OSError:
                     self._disconnect(sock)
 
-        while not self.messages_to_users.empty() or self.name_changed or self.files_to_send:
+        while not self.messages_to_users.empty() or self.name_changed or self._files_to_send:
             if not self.messages_to_users.empty():
                 message = self.messages_to_users.get()
             else:
@@ -140,7 +151,7 @@ class Network:
                         continue
                     try:
                         sock.send(message)
-                        if sock in self.files_to_send:
+                        if sock in self._files_to_send:
                             self._send_file(sock)
                     except OSError:
                         self._disconnect(sock)
@@ -148,8 +159,8 @@ class Network:
 
     def _send_file(self, sock):
         buffer = b''
-        path = self.files_to_send[sock][0]
-        file_name = self.files_to_send[sock][1]
+        path = self._files_to_send[sock][0]
+        file_name = self._files_to_send[sock][1]
         with open(path, 'rb') as f:
             buffer = base64.b64encode(f.read()).decode('utf-8')
 
@@ -164,7 +175,7 @@ class Network:
             sock.send(message)
         except OSError:
             self._disconnect(sock)
-        self.files_to_send.pop(sock)
+        self._files_to_send.pop(sock)
 
     def _create_message(self, message):
         return self.create_data(
@@ -190,7 +201,7 @@ class Network:
     
     @staticmethod
     def create_data(user='', host='', msg='',
-                    action='', connections=None, address=''):
+                    action='connect', connections=None, address=''):
         data = {
             'address': address,
             'type': 'msg',
@@ -216,9 +227,9 @@ class Network:
             else:
                 try:
                     new_sock, adr = self.receiving_socket.accept()
-                    self._socket_connections[new_sock] = adr
                     self.incoming_connections.put(new_sock)
                 except OSError:
+                    # waiting time exceeded
                     pass
 
             if not self.incoming_connections.empty():
